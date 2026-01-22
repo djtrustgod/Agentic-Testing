@@ -1,0 +1,67 @@
+name: Rollback Deployment
+
+on: 
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to rollback'
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+      image_tag:
+        description: 'Image tag to rollback to (commit SHA)'
+        required: true
+        type: string
+
+permissions: 
+  id-token: write
+  contents: read
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    environment:  ${{ inputs.environment }}
+    
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region:  ${{ vars.AWS_REGION }}
+
+      - name: Verify image exists
+        run: |
+          aws ecr describe-images \
+            --repository-name ${{ vars.ECR_REPOSITORY }} \
+            --image-ids imageTag=${{ inputs. image_tag }}
+
+      - name: Download current task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition ${{ vars.TASK_DEFINITION_FAMILY }} \
+            --query taskDefinition > task-definition.json
+
+      - name: Update task definition with rollback image
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with: 
+          task-definition: task-definition.json
+          container-name: ${{ vars.CONTAINER_NAME }}
+          image: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ vars.AWS_REGION }}.amazonaws.com/${{ vars. ECR_REPOSITORY }}:${{ inputs.image_tag }}
+
+      - name: Deploy rollback
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with: 
+          task-definition: ${{ steps.task-def.outputs. task-definition }}
+          service:  ${{ vars.ECS_SERVICE }}
+          cluster: ${{ vars.ECS_CLUSTER }}
+          wait-for-service-stability: true
+
+      - name: Rollback summary
+        run: |
+          echo "## ⏪ Rollback Complete!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Environment:** ${{ inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Rolled back to:** ${{ inputs.image_tag }}" >> $GITHUB_STEP_SUMMARY
